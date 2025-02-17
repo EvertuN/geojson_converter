@@ -4,37 +4,32 @@ from shapely.geometry import Polygon
 
 def metros_para_graus(metros, latitude):
     """
-    Converte metros para graus aproximadamente, considerando variação na longitude pela latitude.
+    Converte metros para graus aproximadamente, considerando a latitude.
     """
-    metros_por_grau_lat = 1320  # 1 grau de latitude ≈ 111320 metros = não é não
-    metros_por_grau_lon = 1320 * abs(latitude)  # 1 grau de longitude depende da latitude = muito menos
+    if metros is None or metros == 0:
+        return 0
+    metros_por_grau = 111320  # Aproximado
+    return metros / metros_por_grau
 
-    return metros / metros_por_grau_lat, metros / metros_por_grau_lon
 
-
-def gerar_grid_lotes(geojson, largura_lote, altura_lote):
+def gerar_grid_lotes(geojson, largura_lote, altura_lote, corte_tipo, corte_percentual):
     """
-    Gera um grid de lotes dentro do polígono e remove os que ficam fora.
+    Gera um grid de lotes dentro do polígono e aplica corte se necessário.
     """
-    # Carrega o polígono da quadra
     poligono_geojson = geojson['features'][0]['geometry']['coordinates'][0]
     poligono = Polygon(poligono_geojson)
-
-    # Obtém os limites da quadra
     min_x, min_y, max_x, max_y = poligono.bounds
-    latitude_base = (min_y + max_y) / 2  # Pega a latitude média para conversão
+    latitude_base = (min_y + max_y) / 2
 
-    # Converte metros para graus
-    altura_graus, largura_graus = metros_para_graus(altura_lote, latitude_base)
+    largura_graus = metros_para_graus(largura_lote, latitude_base) if largura_lote else max_x - min_x
+    altura_graus = metros_para_graus(altura_lote, latitude_base) if altura_lote else max_y - min_y
 
-    # Criar lotes dentro da quadra
     lotes = []
+    id_lote = 1
     x = min_x
-    id_lote = 1  # Identificador único do lote
-    while x < max_x:
+    while x + largura_graus <= max_x:
         y = min_y
-        while y < max_y:
-            # Criar um polígono retangular para o lote
+        while y + altura_graus <= max_y:
             lote = Polygon([
                 (x, y),
                 (x + largura_graus, y),
@@ -42,29 +37,44 @@ def gerar_grid_lotes(geojson, largura_lote, altura_lote):
                 (x, y + altura_graus),
                 (x, y)
             ])
-
-            # Adicionar apenas se o centro do lote estiver dentro da quadra
             if poligono.contains(lote.centroid):
                 lotes.append({
                     "type": "Feature",
                     "properties": {"id": id_lote},
-                    "geometry": {
-                        "type": "Polygon",
-                        "coordinates": [list(lote.exterior.coords)]
-                    }
+                    "geometry": {"type": "Polygon", "coordinates": [list(lote.exterior.coords)]}
                 })
-                id_lote += 1  # Incrementa o ID do lote
-
+                id_lote += 1
             y += altura_graus
         x += largura_graus
+
+    if corte_tipo and corte_percentual is not None:
+        novo_lotes = []
+        for lote in lotes:
+            coords = lote["geometry"]["coordinates"][0]
+            if corte_tipo == "V":
+                x_medio = coords[0][0] + (corte_percentual / 100) * (coords[1][0] - coords[0][0])
+                lote1 = Polygon([coords[0], (x_medio, coords[0][1]), (x_medio, coords[2][1]), coords[3], coords[0]])
+                lote2 = Polygon(
+                    [(x_medio, coords[0][1]), coords[1], coords[2], (x_medio, coords[2][1]), (x_medio, coords[0][1])])
+            else:
+                y_medio = coords[0][1] + (corte_percentual / 100) * (coords[2][1] - coords[0][1])
+                lote1 = Polygon([coords[0], coords[1], (coords[1][0], y_medio), (coords[0][0], y_medio), coords[0]])
+                lote2 = Polygon(
+                    [(coords[0][0], y_medio), (coords[1][0], y_medio), coords[2], coords[3], (coords[0][0], y_medio)])
+
+            novo_lotes.extend([
+                {"type": "Feature", "properties": {"id": lote["properties"]["id"] * 2},
+                 "geometry": {"type": "Polygon", "coordinates": [list(lote1.exterior.coords)]}},
+                {"type": "Feature", "properties": {"id": lote["properties"]["id"] * 2 + 1},
+                 "geometry": {"type": "Polygon", "coordinates": [list(lote2.exterior.coords)]}},
+            ])
+        lotes = novo_lotes
 
     return {"type": "FeatureCollection", "features": lotes}
 
 
 def main():
-    # Entrada do usuário
-    geojson_file = "quadra.geojson"
-
+    geojson_file = "qh.json"
     try:
         with open(geojson_file, 'r') as f:
             geojson_data = json.load(f)
@@ -72,23 +82,24 @@ def main():
         print("Erro: Arquivo não encontrado.")
         return
 
-    try:
-        largura_lote = float(input("Digite a largura do lote (em metros): "))
-        altura_lote = float(input("Digite a altura do lote (em metros): "))
-    except ValueError:
-        print("Erro: Insira valores numéricos para largura e altura.")
-        return
+    largura_lote = input("Largura (m) ou ENTER para manter: ")
+    largura_lote = float(largura_lote) if largura_lote else None
 
-    # Gera os lotes
-    novo_geojson = gerar_grid_lotes(geojson_data, largura_lote, altura_lote)
+    altura_lote = input("Altura (m) ou ENTER para manter: ")
+    altura_lote = float(altura_lote) if altura_lote else None
 
-    # Salva o novo arquivo
-    output_file = "lotes_gerados.geojson"
+    corte_tipo = input("Corte ('H' horizontal, 'V' vertical) ou ENTER para ignorar: ").strip().upper()
+    corte_percentual = None
+    if corte_tipo in ["H", "V"]:
+        corte_percentual = input("Percentual de corte (0-100) ou ENTER para ignorar: ")
+        corte_percentual = float(corte_percentual) if corte_percentual else None
+
+    novo_geojson = gerar_grid_lotes(geojson_data, largura_lote, altura_lote, corte_tipo, corte_percentual)
+
+    output_file = "lotes_gerados.json"
     with open(output_file, 'w') as f:
         json.dump(novo_geojson, f, indent=2)
-
-    print(f"Lotes gerados com sucesso! Salvo em: {output_file}")
-    print(f"Total de lotes gerados: {len(novo_geojson['features'])}")
+    print(f"Lotes gerados: {len(novo_geojson['features'])} | Salvo em {output_file}")
 
 
 if __name__ == "__main__":
