@@ -1,2 +1,0 @@
-largura = 1
-altura = 1.1
